@@ -1,6 +1,6 @@
 {
   "name": "devx-address-poisoning-check",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Free CLI + MCP server: before you send crypto, check the recipient for address poisoning (lookalike of an address you trust, bad EIP-55 checksum). Offline, no keys. Optional hosted on-chain check via x402.",
   "type": "module",
   "license": "MIT",

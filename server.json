@@ -3,11 +3,11 @@
   "name": "io.github.devx-agent/address-poisoning-check",
   "title": "Address Poisoning Check",
   "description": "Before sending crypto, check the recipient for address poisoning: lookalikes and bad checksums",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "websiteUrl": "https://address-poisoning-check.nextill-pos.workers.dev",
   "repository": { "url": "https://github.com/devx-agent/address-poisoning-check", "source": "github" },
   "packages": [
-    { "registryType": "npm", "identifier": "devx-address-poisoning-check", "version": "1.0.0", "transport": { "type": "stdio" }, "packageArguments": [ { "type": "positional", "value": "mcp" } ] }
+    { "registryType": "npm", "identifier": "devx-address-poisoning-check", "version": "1.1.0", "transport": { "type": "stdio" }, "packageArguments": [ { "type": "positional", "value": "mcp" } ] }
   ],
   "remotes": [ { "type": "streamable-http", "url": "https://address-poisoning-check.nextill-pos.workers.dev/mcp" } ]
 }
