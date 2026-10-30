@@ -1,0 +1,4 @@
+node_modules
+cli/node_modules
+worker/node_modules
+.git
