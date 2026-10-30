@@ -90,6 +90,7 @@ export default {
 - Source: https://github.com/devx-agent/address-poisoning-check
 - Related: https://sweeper-check.nextill-pos.workers.dev (EIP-7702 sweeper check), https://crypto-link-check.nextill-pos.workers.dev (phishing link check), https://tokencheck.madebydevx.com (token check)
 `, { headers: { "content-type": "text/plain; charset=utf-8" } });
+    if (p === "/.well-known/402index-verify.txt") return new Response("26a5c5c5d62f7079a3744c60fc33b2c560dc65cbc950ead91d4f4dcab982ce05", { headers: { "content-type": "text/plain" } });
     if (p === "/terms") return new Response(TERMS, { headers: { "content-type": "text/plain; charset=utf-8", "access-control-allow-origin": "*" } });
     if (p === "/openapi.json") return J(docs(origin));
     if (p === "/.well-known/x402") return J({ version: 1, resources: [origin + ROUTE], description: SERVICE });
