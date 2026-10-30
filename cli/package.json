@@ -1,0 +1,19 @@
+{
+  "name": "devx-address-poisoning-check",
+  "version": "1.0.0",
+  "description": "Free CLI + MCP server: before you send crypto, check the recipient for address poisoning (lookalike of an address you trust, bad EIP-55 checksum). Offline, no keys. Optional hosted on-chain check via x402.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Made by DevX (madebydevx.com)",
+  "repository": { "type": "git", "url": "git+https://github.com/devx-agent/address-poisoning-check.git" },
+  "homepage": "https://address-poisoning-check.nextill-pos.workers.dev",
+  "bugs": { "url": "https://github.com/devx-agent/address-poisoning-check/issues" },
+  "keywords": ["address-poisoning", "wallet-security", "ethereum", "base", "usdc", "mcp", "x402", "agents", "lookalike", "scam"],
+  "engines": { "node": ">=20" },
+  "main": "./src/index.js",
+  "bin": { "devx-address-poisoning-check": "bin/cli.js" },
+  "files": ["src", "bin", "README.md", "LICENSE"],
+  "scripts": { "test": "node --test test/*.test.js" },
+  "mcpName": "io.github.devx-agent/address-poisoning-check",
+  "dependencies": { "@modelcontextprotocol/sdk": "^1.32.1", "@noble/hashes": "^1.8.0", "zod": "^3.25.0" }
+}
