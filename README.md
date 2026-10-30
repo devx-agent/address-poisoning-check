@@ -42,7 +42,7 @@ GET https://address-poisoning-check.nextill-pos.workers.dev/v1/check?from=0x...&
 * Answers `402` with an x402 v1 body (`X-PAYMENT`, network `base`) and a v2 `PAYMENT-REQUIRED` header (`PAYMENT-SIGNATURE`, `eip155:8453`). Both work.
 * 5000 atomic USDC (0.005 USDC) to `0xB3cDDccEe6B150c8efFD55B961afc0Ecefe7f247`, settled through the Coinbase CDP facilitator, listed in the CDP x402 Bazaar.
 * Settled only **after** the report is produced; bad input or data-source errors are not charged.
-* Data: Ethereum/Avalanche via the Routescan explorer API (last 300 token transfers + 150 transactions of the sender); Base via public RPC logs (about the last 4-5 days of USDC, USDbC, USDT, EURC, WETH, cbBTC transfers). It is a heuristic over a window of public data: always confirm the full address with the payee.
+* Data: Ethereum/Avalanche via the Routescan explorer API (last 300 token transfers + 150 transactions of the sender); Base via the Coinbase CDP SQL API (last 14 days of all ERC-20 transfers, including unknown/fake tokens), falling back to public RPC logs for a shorter window. Typical paid response: about 1-2 s. Data collection has a 3.5 s budget; if a source is slow you still get a report with `"partial": true` and the scanned window stated per chain in `chains[].window`. It is a heuristic over a window of public data: always confirm the full address with the payee.
 
 Example (the May 2024 $68M WBTC case): `from=0x1E227979f0b5BC691a70DEAed2e0F39a6F538FD5&to=0xd9A1C3788D81257612E2581A6ea0aDa244853a91` returns `danger` / `possibly_already_poisoned`: the victim did send real value to that address, but it first appeared in their history through a zero-value transfer.
 

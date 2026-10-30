@@ -1,9 +1,9 @@
 import { facilitate, facilitatorConfig } from "../shared/facilitator.js";
-import { basic, full, isAddr, CHAINS } from "./core.js";
+import { basic, full, isAddr, CHAINS, setDataEnv, cache } from "./core.js";
 import PAGE from "./page.html";
 import { mcp } from "./mcp.js";
 
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 const SERVICE = "DevX Address Poisoning Check";
 const PAY_TO = "0xB3cDDccEe6B150c8efFD55B961afc0Ecefe7f247";
 const FACILITATOR = "Coinbase CDP facilitator (api.cdp.coinbase.com/platform/v2/x402)";
@@ -54,7 +54,7 @@ function parseQ(url) {
 
 const TERMS = `${SERVICE} - Terms of Service (v${VERSION}, effective 2026-10-30)
 Operator: DevX / Made by DevX (madebydevx.com), contact madebydevx@gmail.com.
-1. Service. Read-only analysis of public blockchain data. GET /api/basic?to=0x..&known=0x..,0x.. (free) compares a recipient with addresses you supply (lookalike + EIP-55 checksum, offline). GET ${ROUTE}?from=0x..&to=0x.. (paid) scans the sender's recent public transfer history (Ethereum and Avalanche via the Routescan explorer API: last 300 token transfers + 150 transactions; Base via public RPC: about the last 4-5 days of USDC, USDbC, USDT, EURC, WETH, cbBTC transfers) and reports lookalikes, zero-value/dust/fake-token poisoning transfers and a verdict. We never ask for keys and never move funds.
+1. Service. Read-only analysis of public blockchain data. GET /api/basic?to=0x..&known=0x..,0x.. (free) compares a recipient with addresses you supply (lookalike + EIP-55 checksum, offline). GET ${ROUTE}?from=0x..&to=0x.. (paid) scans the sender's recent public transfer history (Ethereum and Avalanche via the Routescan explorer API: last 300 token transfers + 150 transactions; Base via the Coinbase CDP SQL API: the last 14 days of all ERC-20 transfers, falling back to public RPC for a shorter window) and reports lookalikes, zero-value/dust/fake-token poisoning transfers and a verdict. Data collection has a ~3.5 s time budget; if a source is slow the report is still returned, with "partial": true and the scanned window per chain stated in chains[].window. We never ask for keys and never move funds.
 2. Price. 0.005 USDC per paid call, x402 "exact" on Base, paid to ${PAY_TO}, settled through ${FACILITATOR}.
 3. Not charged on error. Payment is settled only after the report is produced. Invalid input or a data-source error returns an error and the authorization is not settled.
 4. Refunds. If you were charged but got no report, email madebydevx@gmail.com with the Base tx hash within 30 days; verified cases are refunded in USDC on Base.
@@ -74,7 +74,7 @@ function docs(origin) {
 
 export default {
   async fetch(req, env) {
-    ENV = env || {};
+    ENV = env || {}; setDataEnv(ENV);
     const url = new URL(req.url), origin = url.origin, p = url.pathname;
     if (req.method === "OPTIONS") return new Response(null, { headers: { ...H, "access-control-allow-headers": "*", "access-control-allow-methods": "GET, HEAD, POST, OPTIONS" } });
     if (p === "/") return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" } });

@@ -46,8 +46,38 @@ const TOKENS = {
 };
 const RS = { ethereum: 1, avalanche: 43114 };
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
-const BASE_RPC = "https://base-rpc.publicnode.com";
+import { cdpJwt } from "../shared/facilitator.js";
+let CDP = null; // { id, secret } from Worker secrets; enables the Coinbase CDP SQL API (indexed Base data, ~0.5 s)
+export function setDataEnv(env) { CDP = env && env.CDP_API_KEY_ID && env.CDP_API_KEY_SECRET ? { id: env.CDP_API_KEY_ID, secret: env.CDP_API_KEY_SECRET } : null; }
+const SQL_PATH = "/platform/v2/data/query/run";
+async function cdpSql(sql, ms) {
+  const c = new AbortController(); const tm = setTimeout(() => c.abort(), ms);
+  try { const r = await fetch("https://api.cdp.coinbase.com" + SQL_PATH, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + cdpJwt(CDP.id, CDP.secret, "POST", "api.cdp.coinbase.com", SQL_PATH) }, body: JSON.stringify({ sql }), signal: c.signal });
+    const j = await r.json().catch(() => ({})); if (!r.ok || !(Array.isArray(j.result) || (j.result == null && j.metadata))) throw new Error("cdp sql " + r.status + " " + String(j.errorMessage || "").slice(0, 60)); return j.result || []; } finally { clearTimeout(tm); }
+}
+async function baseSql(A, deadline) {
+  const key = `bs1/${A}`; const hit = await cget(key); if (hit) return { ...hit, cached: true };
+  for (const days of [14, 7]) {
+    const left = deadline - Date.now(); if (left < 500) break;
+    const q = (col) => `SELECT transaction_hash AS h, block_number AS b, toUnixTimestamp(block_timestamp) AS ts, address AS k, parameters['from'] AS f, parameters['to'] AS o, toString(parameters['value']) AS v FROM base.events WHERE event_signature = 'Transfer(address,address,uint256)' AND block_timestamp > now() - INTERVAL ${days} DAY AND parameters['${col}'] = '${A}'`;
+    try {
+      const rows = await cdpSql(`${q("from")} UNION ALL ${q("to")} LIMIT 3000`, left);
+      const ev = rows.map((l) => classify("base", { chain: "base", hash: l.h, ts: +l.ts, token: lc(l.k), from: lc(l.f), to: lc(l.o), value: /^\d+$/.test(String(l.v)) ? String(l.v) : "0", signed_by_sender: false }));
+      const out = { events: ev, complete: rows.length < 3000, source: "Coinbase CDP SQL API (indexed Base)", window: `last ${days} days of ALL ERC-20 Transfer events (incl. unknown/fake tokens)` + (rows.length >= 3000 ? " - PARTIAL: capped at 3000 transfers" : "") };
+      await cput(key, out, 120); return out;
+    } catch (e) { if (!/scanned more data/.test(String(e.message))) break; }
+  }
+  return null;
+}
+const BASE_RPCS = ["https://base-rpc.publicnode.com", "https://base-rpc.polkachu.com", "https://base.rpc.blxrbdn.com"];
+const SPAN = 10000;          // blocks per getLogs segment (~5.5 h on Base); aligned so finished segments are cacheable forever
+const MAX_SEGS = 16;         // ~3.7 days max look-back on Base
+const BUDGET_MS = 3500;      // hard time budget for data collection; partial results are labeled
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const CACHE = typeof caches !== "undefined" ? caches.default : null;
+async function cget(key) { if (!CACHE) return null; try { const r = await CACHE.match("https://cache.devx.internal/" + key); return r ? await r.json() : null; } catch { return null; } }
+async function cput(key, val, ttl) { if (!CACHE) return; try { await CACHE.put("https://cache.devx.internal/" + key, new Response(JSON.stringify(val), { headers: { "content-type": "application/json", "cache-control": "public, max-age=" + ttl } })); } catch {} }
+export const cache = { get: cget, put: cput };
 async function getJson(url, init = {}, ms = 12000) {
   const c = new AbortController(); const t = setTimeout(() => c.abort(), ms);
   try { const r = await fetch(url, { ...init, headers: { ...UA, ...(init.headers || {}) }, signal: c.signal }); return await r.json(); } finally { clearTimeout(t); }
@@ -61,42 +91,72 @@ function classify(chain, ev) {
   const mimic = !canonical && /^(usdc|usdt|usd₮|weth|eth|dai|eurc|usdbc)$/i.test(String(ev.symbol || "").trim());
   return { ...ev, canonical, symbol: tok ? tok[0] : ev.symbol, zero, dust, fake_token: mimic };
 }
-async function routescan(chain, action, address, offset) {
+async function routescan(chain, action, address, offset, deadline) {
   const u = `https://api.routescan.io/v2/network/mainnet/evm/${RS[chain]}/etherscan/api?module=account&action=${action}&address=${address}&page=1&offset=${offset}&sort=desc`;
-  for (let i = 0; i < 2; i++) { try { const j = await getJson(u); if (Array.isArray(j.result)) return j.result; } catch {} await sleep(700); }
-  throw new Error(chain + " explorer unavailable");
+  for (let i = 0; i < 2; i++) { const left = deadline - Date.now(); if (left < 300) break; try { const j = await getJson(u, {}, left); if (Array.isArray(j.result)) return j.result; } catch {} await sleep(250); }
+  throw new Error(chain + " explorer unavailable within time budget");
 }
-async function rsEvents(chain, address, offset = 300) {
-  const tt = await routescan(chain, "tokentx", address, offset); await sleep(400);
-  const tx = await routescan(chain, "txlist", address, 150);
+async function rsEvents(chain, address, deadline, offset = 300) {
+  const key = `rs1/${chain}/${address}`; const hit = await cget(key); if (hit) return { ...hit, cached: true };
+  const [tt, tx] = await Promise.all([routescan(chain, "tokentx", address, offset, deadline), routescan(chain, "txlist", address, 150, deadline)]);
   const ev = tt.map((x) => classify(chain, { chain, hash: x.hash, ts: +x.timeStamp, token: lc(x.contractAddress), symbol: x.tokenSymbol, decimals: +x.tokenDecimal || 0, from: lc(x.from), to: lc(x.to), value: x.value, signed_by_sender: false }));
   for (const x of tx) if (x.isError !== "1" && x.to) ev.push({ chain, hash: x.hash, ts: +x.timeStamp, token: "native", symbol: chain === "avalanche" ? "AVAX" : "ETH", from: lc(x.from), to: lc(x.to), value: x.value, canonical: true, zero: x.value === "0", dust: false, fake_token: false, signed_by_sender: true });
-  return { events: ev, window: "last " + offset + " token transfers + 150 transactions" };
+  const out = { events: ev, window: "last " + offset + " token transfers + 150 transactions", complete: true };
+  await cput(key, out, 300); return out;
 }
-async function rpc(method, params) { const j = await getJson(BASE_RPC, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }); if (j.error) throw new Error(j.error.message); return j.result; }
+let rr = 0;
+async function rpc(method, params, ms, prefer) {
+  const u = BASE_RPCS[(prefer ?? rr++) % BASE_RPCS.length];
+  const j = await getJson(u, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) }, ms);
+  if (j.error) throw new Error(j.error.message); return j.result;
+}
 const pad = (a) => "0x" + "0".repeat(24) + lc(a).slice(2);
-async function baseEvents(address, chunks = 4) {
-  const head = parseInt(await rpc("eth_blockNumber", []), 16); const addrs = Object.keys(TOKENS.base); const ev = []; let ok = 0, fail = 0;
-  for (let i = 0; i < chunks; i++) { const to = head - i * 50000, from = to - 49999;
-    await Promise.all(["out", "in"].map(async (dir) => {
-      let logs = null;
-      for (let t = 0; t < 3 && !logs; t++) { try { logs = await rpc("eth_getLogs", [{ fromBlock: "0x" + from.toString(16), toBlock: "0x" + to.toString(16), address: addrs, topics: dir === "out" ? [TRANSFER, pad(address)] : [TRANSFER, null, pad(address)] }]); } catch { await sleep(400 * (t + 1)); } }
-      if (!logs) { fail++; return; } ok++;
-      for (const l of logs) ev.push(classify("base", { chain: "base", hash: l.transactionHash, ts: Math.round(Date.now() / 1000 - (head - parseInt(l.blockNumber, 16)) * 2), token: lc(l.address), from: "0x" + l.topics[1].slice(26), to: "0x" + l.topics[2].slice(26), value: BigInt(l.data === "0x" ? 0 : l.data).toString(), signed_by_sender: false }));
-    }));
-  }
-  if (!ok) throw new Error("base rpc unavailable");
-  return { events: ev, window: `last ~${Math.round(chunks * 50000 * 2 / 86400)} days of USDC/USDbC/USDT/EURC/WETH/cbBTC transfers` + (fail ? ` (${fail} of ${chunks * 2} segments unavailable)` : "") };
+async function head(deadline) {
+  const hit = await cget("basehead1"); if (hit && hit.t > Date.now() - 20000) return hit.h;
+  const h = await Promise.any(BASE_RPCS.map((u, i) => rpc("eth_blockNumber", [], Math.max(300, Math.min(2000, deadline - Date.now())), i).then((x) => parseInt(x, 16))));
+  await cput("basehead1", { h, t: Date.now() }, 30); return h;
 }
-async function events(chain, address) { return chain === "base" ? baseEvents(address) : rsEvents(chain, address); }
+async function baseEvents(address, deadline) {
+  const A = lc(address);
+  if (CDP && isAddr(A)) { const r = await baseSql(A, deadline); if (r) return r; } const addrs = Object.keys(TOKENS.base); const now = Date.now();
+  const h = await head(deadline) - 2; // stay 2 blocks behind head (some RPCs lag)
+  const top = Math.floor(h / SPAN) * SPAN; // segment k covers [top-(k-1)*SPAN, ...]; segment 0 is the live partial one
+  const segs = [{ from: top, to: h, live: true }]; for (let k = 1; k < MAX_SEGS; k++) segs.push({ from: top - k * SPAN, to: top - (k - 1) * SPAN - 1, live: false });
+  const jobs = []; for (const s of segs) for (const dir of ["out", "in"]) jobs.push({ s, dir });
+  const res = new Array(jobs.length).fill(null); let next = 0, calls = 0;
+  async function one(i) {
+    const { s, dir } = jobs[i]; const key = `bl1/${A}/${dir}/${s.from}`;
+    if (!s.live) { const hit = await cget(key); if (hit) { res[i] = hit; return; } }
+    for (let t = 0; t < 2; t++) {
+      const left = deadline - Date.now(); if (left < 400 || calls >= 40) return; calls++;
+      try { const logs = await rpc("eth_getLogs", [{ fromBlock: "0x" + s.from.toString(16), toBlock: "0x" + s.to.toString(16), address: addrs, topics: dir === "out" ? [TRANSFER, pad(A)] : [TRANSFER, null, pad(A)] }], left, (i + t) % BASE_RPCS.length);
+        res[i] = logs.map((l) => ({ h: l.transactionHash, b: parseInt(l.blockNumber, 16), k: lc(l.address), f: "0x" + l.topics[1].slice(26), o: "0x" + l.topics[2].slice(26), v: BigInt(l.data === "0x" ? 0 : l.data).toString() }));
+        if (!s.live) await cput(key, res[i], 86400 * 7); return;
+      } catch {}
+    }
+  }
+  const worker = async () => { while (next < jobs.length && deadline - Date.now() > 400) await one(next++); };
+  await Promise.all(Array.from({ length: 8 }, worker));
+  // contiguous coverage from the head: a segment counts only if both directions succeeded
+  let covered = 0; while (covered < segs.length && res[covered * 2] && res[covered * 2 + 1]) covered++;
+  if (!covered) throw new Error("base rpc unavailable within time budget");
+  const ev = [];
+  for (let i = 0; i < covered * 2; i++) for (const l of res[i]) ev.push(classify("base", { chain: "base", hash: l.h, ts: Math.round(now / 1000 - (h - l.b) * 2), token: l.k, from: l.f, to: l.o, value: l.v, signed_by_sender: false }));
+  const fromBlock = segs[covered - 1].from, hours = Math.round((h - fromBlock) * 2 / 3600);
+  const complete = covered === segs.length;
+  return { events: ev, complete, source: "public Base RPC eth_getLogs (fallback)", coverage: { from_block: fromBlock, to_block: h, approx_hours: hours },
+    window: `Base blocks ${fromBlock}-${h} (~${hours} h) of USDC/USDbC/USDT/EURC/WETH/cbBTC transfers` + (complete ? "" : ` - PARTIAL: time budget reached, target was ~${Math.round(MAX_SEGS * SPAN * 2 / 86400 * 10) / 10} days`) };
+}
+async function events(chain, address, deadline) { return chain === "base" ? baseEvents(address, deadline) : rsEvents(chain, address, deadline); }
 
 export async function full(fromAddr, toAddr, chains = ["ethereum", "base"]) {
   const W = lc(fromAddr), X = lc(toAddr);
   const report = { from: W, to: X, checksum_valid: checksumOk(toAddr), chains: [], findings: [] };
   const trusted = new Map(); const poisonEv = []; const seen = new Map(); let firstPoisonTsByAddr = new Map();
-  const per = await Promise.all(chains.map(async (c) => { try { return { chain: c, ...(await events(c, W)) }; } catch (e) { return { chain: c, error: String(e.message || e) }; } }));
+  const deadline = Date.now() + BUDGET_MS;
+  const per = await Promise.all(chains.map(async (c) => { try { return { chain: c, ...(await events(c, W, deadline)) }; } catch (e) { return { chain: c, error: String(e.message || e) }; } }));
   for (const p of per) {
-    const info = { chain: p.chain, window: p.window, error: p.error, transfers_scanned: p.events ? p.events.length : 0 };
+    const info = { chain: p.chain, window: p.window, complete: p.events ? !!p.complete : false, coverage: p.coverage, source: p.source || (p.chain === 'base' ? undefined : 'Routescan explorer API'), cached: p.cached || undefined, error: p.error, transfers_scanned: p.events ? p.events.length : 0 };
     report.chains.push(info); if (!p.events) continue;
     for (const e of p.events) {
       const other = e.from === W ? e.to : e.from; if (!other || other === W) continue;
@@ -140,6 +200,8 @@ export async function full(fromAddr, toAddr, chains = ["ethereum", "base"]) {
   const lv = report.findings.map((z) => z.level);
   report.verdict = lv.includes("high") ? "danger" : lv.includes("medium") ? "caution" : lv.includes("low") ? "caution" : "ok";
   report.advice = report.verdict === "danger" ? "Stop. Do not send. Get the address directly from the payee (or your own saved address book) and compare every character." : report.verdict === "caution" ? "Verify the full address with the payee out of band, or send a small test amount first." : "Recipient matches your real payment history.";
+  report.partial = report.chains.some((c) => !c.complete);
+  if (report.partial) report.partial_note = "Some data was not collected within the time budget (see chains[].window / error). Findings only cover the scanned window; treat ok/caution as weaker evidence and re-run later for a wider window (finished segments are cached).";
   report.checked_at = new Date().toISOString();
   return report;
 }
